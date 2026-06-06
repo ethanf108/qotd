@@ -11,6 +11,50 @@
 
 #define QOTD_PORT 17
 #define LISTEN_BACKLOG 64
+#define MAX_MESSAGE_SIZE 65535
+#define QOTD_MESSAGE_FILE "/etc/qotd.txt"
+
+static char qotd_message[MAX_MESSAGE_SIZE];
+
+static int read_qotd_message() {
+  int fd, ret;
+
+  fd = open(QOTD_MESSAGE_FILE, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    fprintf(stderr, "Error opening QOTD file: ");
+    switch (errno) {
+    case EACCES:
+      fprintf(stderr, "Permission denied\n");
+      return -1;
+    case EINTR:
+      fprintf(stderr, "Interrupted\n");
+      return -1;
+    case ENOENT:
+      fprintf(stderr, "File not found\n");
+      return -1;
+    case ETXTBSY:
+      fprintf(stderr, "File busy??\n");
+      return -1;
+    default:
+      fprintf(stderr, "Other error (%d)\n", errno);
+      return -1;
+    }
+  }
+
+  ret = read(fd, qotd_message, MAX_MESSAGE_SIZE);
+  if (ret < 0) {
+    fprintf(stderr, "Error reading QOTD file: %d\n", errno);
+  } else if (ret < MAX_MESSAGE_SIZE) {
+    qotd_message[ret] = '\0';
+  }
+
+  if (close(fd) < 0) {
+    fprintf(stderr, "Error closing file (?): %d\n", errno);
+    ret = -1;
+  }
+
+  return ret;
+}
 
 static int setup_server(int tcp) {
   int fd, ret;
@@ -48,9 +92,8 @@ static int setup_server(int tcp) {
 
 static int handle_tcp(int fd) {
   int ret;
-  char *buf = "MESSAGE\n";
 
-  ret = send(fd, buf, strlen(buf), 0);
+  ret = send(fd, qotd_message, strnlen(qotd_message, MAX_MESSAGE_SIZE), 0);
   if (ret < 0) {
     fprintf(stderr, "Error sending message to client: %d\n", errno);
     return -errno;
@@ -67,9 +110,8 @@ static int handle_tcp(int fd) {
 
 static int handle_udp(int fd, struct sockaddr_in *addr) {
   int ret;
-  char *buf = "MESSAGE\n";
 
-  ret = sendto(fd, buf, strlen(buf), 0, (struct sockaddr *)addr, sizeof(*addr));
+  ret = sendto(fd, qotd_message, strnlen(qotd_message, MAX_MESSAGE_SIZE), 0, (struct sockaddr *)addr, sizeof(*addr));
   if (ret < 0) {
     fprintf(stderr, "Error sending UDP message: %d\n", errno);
     return -errno;
@@ -123,12 +165,14 @@ int main (int argc, char **argv) {
   while (1) {
     events[0].revents = events[1].revents = 0;
     ret = poll(events, 2, -1);
-    if (ret == EINTR) {
-      continue;
-    } else if (ret < 0) {
+    if (ret < 0) {
+      if (errno == EINTR)
+	continue;
       fprintf(stderr, "Error while polling server sockets: %d\n", errno);
       return 1;
     }
+
+    read_qotd_message();
 
     if (events[0].revents & POLLIN) {	
       ret = accept(tcp_server, (struct sockaddr *) &accept_addr, &accept_addr_len);
