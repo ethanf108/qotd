@@ -92,6 +92,18 @@ int main (int argc, char **argv) {
   struct sockaddr_in accept_addr;
   socklen_t accept_addr_len = sizeof(accept_addr);
 
+  ret = setvbuf(stdout, NULL, _IOLBF, 0);
+  if (ret < 0) {
+    fprintf(stderr, "Failed to line-buffer stdout: %d\n", errno);
+    return 1;
+  }
+
+  ret = setvbuf(stderr, NULL, _IOLBF, 0);
+  if (ret < 0) {
+    fprintf(stderr, "Failed to line-buffer stderr: %d\n", errno);
+    return 1;
+  }
+
   tcp_server = setup_server(1);
   if (tcp_server < 0) {
     return 1;
@@ -131,6 +143,7 @@ int main (int argc, char **argv) {
       
       handle_tcp(ret);
     }
+
   udp:
     if (events[1].revents & POLLIN) {
       ret = recvfrom(udp_server, NULL, 0, 0, (struct sockaddr *) &accept_addr, &accept_addr_len);
