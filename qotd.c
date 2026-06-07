@@ -67,6 +67,12 @@ static int setup_server(int tcp) {
     return -errno;
   }
 
+  ret = 1;
+  ret = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &ret, sizeof(ret));
+  if (ret < 0) {
+    fprintf(stderr, "Error setting SO_REUSEPORT on %s socket: %d. Proceeding\n", tcp == 1 ? "TCP" : "UDP", errno);
+  }
+
   bindaddr.sin_family = AF_INET;
   bindaddr.sin_port = htons(QOTD_PORT);
   inetaddr.s_addr = htonl(0x00000000); // 0.0.0.0
