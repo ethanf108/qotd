@@ -6,7 +6,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <netinet/in.h>
-#include <poll.h>
+#include <sys/epoll.h>
 #include <string.h>
 
 #define QOTD_PORT 17
@@ -136,9 +136,12 @@ static void log_connection(struct sockaddr_in *addr, int tcp) {
 }
 
 int main (int argc, char **argv) {
-  int ret, tcp_server, udp_server;
+  int i, ret, epoll_fd, epoll_num, tcp_server, udp_server;
   struct sockaddr_in accept_addr;
+  struct epoll_event events[2];
   socklen_t accept_addr_len = sizeof(accept_addr);
+
+  qotd_message[0] = '\0';
 
   ret = setvbuf(stdout, NULL, _IOLBF, 0);
   if (ret < 0) {
@@ -162,16 +165,26 @@ int main (int argc, char **argv) {
     return 1;
   }
 
-  //0 = TCP, 1 = udP
-  struct pollfd events[2];
-  events[0].fd = tcp_server;
-  events[1].fd = udp_server;
-  events[0].events = events[1].events = POLLIN;
+  //0 = TCP, 1 = UDP
+  epoll_fd = epoll_create(EPOLL_CLOEXEC);
+  if (epoll_fd < 0) {
+    fprintf(stderr, "Error creating epoll FD: %d\n", errno);
+    return 1;
+  }
+
+  for (i = 0; i < 2; i++) {
+    events[i].events = EPOLLIN;
+    events[i].data.fd = i == 0 ? tcp_server : udp_server;
+    ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, events[i].data.fd, &events[i]);
+    if (ret < 0) {
+      fprintf(stderr, "Error adding epoll fd: %d\n", errno);
+      return 1;
+    }
+  }
 
   while (1) {
-    events[0].revents = events[1].revents = 0;
-    ret = poll(events, 2, -1);
-    if (ret < 0) {
+    epoll_num = epoll_wait(epoll_fd, events, 2, -1);
+    if (epoll_num < 0) {
       if (errno == EINTR)
 	continue;
       fprintf(stderr, "Error while polling server sockets: %d\n", errno);
@@ -180,32 +193,36 @@ int main (int argc, char **argv) {
 
     read_qotd_message();
 
-    if (events[0].revents & POLLIN) {	
-      ret = accept(tcp_server, (struct sockaddr *) &accept_addr, &accept_addr_len);
-      if (ret < 0) {
-	fprintf(stderr, "Error accepting client from TCP: %d\n", errno);
-	goto udp;
-      }
-      if (accept_addr_len > sizeof(accept_addr)) {
-	fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ???\n");
-      } else
-	log_connection(&accept_addr, 1);
-      
-      handle_tcp(ret);
-    }
-
-  udp:
-    if (events[1].revents & POLLIN) {
-      ret = recvfrom(udp_server, NULL, 0, 0, (struct sockaddr *) &accept_addr, &accept_addr_len);
-      if (ret < 0) {
-	fprintf(stderr, "Error recving from UDP: %d\n", errno);
+    for (i = 0; i < epoll_num; i++) {
+      if (!(events[i].events & EPOLLIN)) {
+	fprintf(stderr, "Exceptional condition from epoll: %x\n", events[i].events);
 	continue;
       }
-      if (accept_addr_len > sizeof(accept_addr)) {
-	fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ??? NO MESSAGE SENT\n");
-      } else {
-	log_connection(&accept_addr, 0);
-	handle_udp(udp_server, &accept_addr);
+
+      if (events[i].data.fd == tcp_server) {
+	ret = accept(tcp_server, (struct sockaddr *) &accept_addr, &accept_addr_len);
+	if (ret < 0) {
+	  fprintf(stderr, "Error accepting client from TCP: %d\n", errno);
+	  continue;
+	}
+	if (accept_addr_len > sizeof(accept_addr)) {
+	  fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ???\n");
+	} else
+	  log_connection(&accept_addr, 1);
+
+	handle_tcp(ret);
+      } else if (events[i].data.fd == udp_server) {
+	ret = recvfrom(udp_server, NULL, 0, 0, (struct sockaddr *) &accept_addr, &accept_addr_len);
+	if (ret < 0) {
+	  fprintf(stderr, "Error recving from UDP: %d\n", errno);
+	  continue;
+	}
+	if (accept_addr_len > sizeof(accept_addr)) {
+	  fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ??? NO MESSAGE SENT\n");
+	} else {
+	  log_connection(&accept_addr, 0);
+	  handle_udp(udp_server, &accept_addr);
+	}
       }
     }
   }
