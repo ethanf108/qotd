@@ -73,12 +73,11 @@ static int read_qotd_message() {
 
 static int setup_server(int tcp, int port, int epoll_fd) {
   int fd, ret;
-  struct sockaddr_in bindaddr;
-  struct in_addr inetaddr;
+  struct sockaddr_in6 bindaddr;
   struct sockdef *sock_info;
   struct epoll_event event;
 
-  fd = socket(AF_INET, tcp == 1 ? SOCK_STREAM : SOCK_DGRAM, 0);
+  fd = socket(AF_INET6, tcp == 1 ? SOCK_STREAM : SOCK_DGRAM, 0);
   if (fd < 0) {
     fprintf(stderr, "Error opening %s port %d: %d\n", tcp == 1 ? "TCP" : "UDP", port, errno);
     return -errno;
@@ -90,10 +89,11 @@ static int setup_server(int tcp, int port, int epoll_fd) {
     fprintf(stderr, "Error setting SO_REUSEPORT on %s port %d: %d. Proceeding\n", tcp == 1 ? "TCP" : "UDP", port, errno);
   }
 
-  bindaddr.sin_family = AF_INET;
-  bindaddr.sin_port = htons(port);
-  inetaddr.s_addr = htonl(0x00000000); // 0.0.0.0
-  bindaddr.sin_addr = inetaddr;
+  bindaddr.sin6_family = AF_INET6;
+  bindaddr.sin6_port = htons(port);
+  bindaddr.sin6_scope_id = 0;
+  bindaddr.sin6_flowinfo = 0;
+  memset(bindaddr.sin6_addr.s6_addr, 0, 16);
   ret = bind(fd, (struct sockaddr *) &bindaddr, sizeof(bindaddr));
   if (ret < 0) {
     fprintf(stderr, "Error binding %s port %d: %d\n", tcp == 1 ? "TCP" : "UDP", port, errno);
@@ -183,7 +183,7 @@ static int handle_tcp(struct sockdef *sock_info) {
   return 0;
 }
 
-static int handle_udp(struct sockdef *sock_info, struct sockaddr_in *addr, char *buf, int buflen) {
+static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, char *buf, int buflen) {
   int i, ret;
 
   if (sock_info->protocol == P_DISCARD)
@@ -209,10 +209,11 @@ static int handle_udp(struct sockdef *sock_info, struct sockaddr_in *addr, char 
   return 0;
 }
 
-static void log_connection(struct sockaddr_in *addr, struct sockdef *sock_info) {
-  in_addr_t ipaddr;
-  in_port_t port;
+static void log_connection(struct sockaddr_in6 *addr, struct sockdef *sock_info) {
   char *proto_str;
+  char *buf = malloc(128);
+  uint16_t *hextets = (uint16_t *)addr->sin6_addr.s6_addr;
+  int i, len = 0;
 
   switch (sock_info->protocol) {
   case P_QOTD:
@@ -229,22 +230,44 @@ static void log_connection(struct sockaddr_in *addr, struct sockdef *sock_info) 
     break;
   }
 
-  port = ntohs(addr->sin_port);
-  ipaddr = ntohl(addr->sin_addr.s_addr);
-  printf("%s %s Connection from %d.%d.%d.%d:%d\n",
-	 (sock_info->flags & 1) ? "TCP" : "UDP",
-	 proto_str,
-	 (ipaddr & 0xFF000000) >> 24,
-	 (ipaddr & 0x00FF0000) >> 16,
-	 (ipaddr & 0x0000FF00) >> 8,
-	 ipaddr & 0x000000FF,
-	 port,
-	 ipaddr);
+  printf("%s %s connection from ", proto_str, sock_info->flags & 1 ? "TCP" : "UDP");
+
+  buf[len++] = '[';
+  for (i = 0; i < 8; i++) {
+    if (hextets[i] == 0) {
+      if (buf[len - 1] != ':')
+	buf[len++] = ':';
+      continue;
+    }
+    // ipv4
+    if (hextets[i] == 0xFFFF && i == 5 & len == 2) {
+      goto ipv4;
+    }
+    if (i > 0)
+      buf[len++] = ':';
+    len += sprintf(buf + len, "%x", ntohs(hextets[i]));
+  }
+  buf[len++] = ']';
+  buf[len++] = ':';
+  sprintf(buf + len, "%d", addr->sin6_port);
+  goto out;
+
+ ipv4:
+  sprintf(buf, "%d.%d.%d.%d:%d",
+		addr->sin6_addr.s6_addr[12],
+		addr->sin6_addr.s6_addr[13],
+		addr->sin6_addr.s6_addr[14],
+		addr->sin6_addr.s6_addr[15],
+		addr->sin6_port);
+
+ out:
+  printf("%s\n", buf);
+  free(buf);
 }
 
 static void handle(struct epoll_event *event, int epoll_fd) {
   int ret, tcp_port;
-  struct sockaddr_in accept_addr;
+  struct sockaddr_in6 accept_addr;
   socklen_t accept_addr_len = sizeof(accept_addr);
   struct sockdef *curr_sock_info;
 
