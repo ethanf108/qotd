@@ -1,5 +1,10 @@
 * Quote of the Day server
 RFC 862 compliant
+
 RFC 863 compliant
+
 RFC 865 compliant
+
 RFC 4 compliant
+
+RFC 868 compliant

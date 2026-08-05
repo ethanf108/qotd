@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <string.h>
+#include <time.h>
 
 #define QOTD_PORT 17
 #define MAX_QOTD_SIZE 65535
@@ -15,11 +16,13 @@
 #define LISTEN_BACKLOG 64
 #define SIMUL_EPOLL_EVENTS 2
 #define READ_BUF_SIZE 65537
+#define TIME_DIFF 0x83aa7e66 // Number of seconds between 1900 and 1970
 
 #define P_FOUR 4
 #define P_ECHO 7
 #define P_DISCARD 9
 #define P_QOTD 17
+#define P_TIME 37
 
 struct sockdef {
   int fd;
@@ -27,7 +30,7 @@ struct sockdef {
   int protocol; //0b...ba: b = 1 == server, a = 1 == tcp
 };
 
-static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD};
+static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD, P_TIME};
 static char qotd_message[MAX_QOTD_SIZE];
 static char read_buffer[READ_BUF_SIZE];
 
@@ -137,6 +140,24 @@ static int setup_server(int tcp, int port, int epoll_fd) {
   return ret;
 }
 
+static int handle_time() {
+  time_t ret = time(NULL);
+  if (ret == (time_t) -1) {
+    if (errno == EOVERFLOW)
+      fprintf(stderr, "Time overflow!!!\n");
+    else
+      fprintf(stderr, "Error getting time: %d\n", errno);
+    return -1;
+  }
+
+  ret += TIME_DIFF;
+  if (ret > 0xFFFFFFFF)
+    fprintf(stderr, "Y203[68]!!!\n");
+
+  *((uint32_t *)read_buffer) = htonl(ret & 0xFFFFFFFF);
+  return 4;
+}
+
 static int handle_tcp(struct sockdef *sock_info) {
   int i, ret, pos;
 
@@ -146,10 +167,17 @@ static int handle_tcp(struct sockdef *sock_info) {
     if (ret < 0) {
       if (errno != ECONNRESET)
 	fprintf(stderr, "Error sending message to client: %d\n", errno);
-      ret = -errno;
+      return -errno;
     } else
-      ret = -1; // To close it and remove from epoll
-    return ret;
+      return -1; // To close it and remove from epoll
+  } else if (sock_info->protocol == P_TIME) {
+    ret = handle_time();
+    if (ret < 0)
+      return -1;
+    ret = write(sock_info->fd, read_buffer, ret);
+    if (ret < 0 && errno != ECONNRESET)
+      fprintf(stderr, "Error sending message to client: %d\n", errno);
+    return -1;
   }
 
   ret = read(sock_info->fd, read_buffer, READ_BUF_SIZE);
@@ -183,8 +211,9 @@ static int handle_tcp(struct sockdef *sock_info) {
   return 0;
 }
 
-static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, char *buf, int buflen) {
+static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, int buflen) {
   int i, ret;
+  char *buf = read_buffer;
 
   if (sock_info->protocol == P_DISCARD)
     return 0;
@@ -192,6 +221,11 @@ static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, char
     read_qotd_message();
     buf = qotd_message;
     buflen = strnlen(buf, MAX_QOTD_SIZE);
+  } else if (sock_info->protocol == P_TIME) {
+    ret = handle_time();
+    if (ret < 0)
+      return -1;
+    buflen = ret;
   } else if (sock_info->protocol == P_FOUR) {
     ret = 0;
     for (i = 0; i < buflen; i++) {
@@ -227,6 +261,9 @@ static void log_connection(struct sockaddr_in6 *addr, struct sockdef *sock_info)
     break;
   case P_ECHO:
     proto_str = "ECHO";
+    break;
+  case P_TIME:
+    proto_str = "TIME";
     break;
   }
 
@@ -301,7 +338,7 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	  fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
 	  close(curr_sock_info->fd);
 	}
-	if (tcp_port != P_QOTD)
+	if (tcp_port != P_QOTD && tcp_port != P_TIME)
 	  return;
       }
     }
@@ -324,12 +361,12 @@ static void handle(struct epoll_event *event, int epoll_fd) {
       fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ??? NO MESSAGE SENT\n");
     else {
       log_connection(&accept_addr, curr_sock_info);
-      handle_udp(curr_sock_info, &accept_addr, read_buffer, ret);
+      handle_udp(curr_sock_info, &accept_addr, ret);
     }
   }
 }
 
-int main (int argc, char **argv) {
+int main(int argc, char **argv) {
   int i, ret, epoll_fd;
   struct epoll_event events[SIMUL_EPOLL_EVENTS];
 
