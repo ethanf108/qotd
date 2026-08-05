@@ -23,14 +23,19 @@
 #define P_DISCARD 9
 #define P_QOTD 17
 #define P_TIME 37
+#define P_DAYTIME 13
+
+#define F_TCP 1
+#define F_SERVER 2
+#define F_AUTO 4
 
 struct sockdef {
   int fd;
-  int flags;
-  int protocol; //0b...ba: b = 1 == server, a = 1 == tcp
+  int flags; //0b...cba: c = auto TCP (qotd, time, etc); b = 1 == server; a = 1 == tcp
+  int protocol;
 };
 
-static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD, P_TIME};
+static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD, P_TIME, P_DAYTIME};
 static char qotd_message[MAX_QOTD_SIZE];
 static char read_buffer[READ_BUF_SIZE];
 
@@ -121,7 +126,9 @@ static int setup_server(int tcp, int port, int epoll_fd) {
   }
   sock_info->fd = fd;
   sock_info->protocol = port;
-  sock_info->flags = 2 | tcp;
+  sock_info->flags = F_SERVER | tcp;
+  if (port == P_QOTD || port == P_TIME || port == P_DAYTIME)
+    sock_info->flags |= F_AUTO;
 
   event.events = EPOLLIN;
   event.data.ptr = sock_info;
@@ -140,7 +147,7 @@ static int setup_server(int tcp, int port, int epoll_fd) {
   return ret;
 }
 
-static int handle_time() {
+static int handle_time(int which) {
   time_t ret = time(NULL);
   if (ret == (time_t) -1) {
     if (errno == EOVERFLOW)
@@ -150,12 +157,16 @@ static int handle_time() {
     return -1;
   }
 
-  ret += TIME_DIFF;
-  if (ret > 0xFFFFFFFF)
-    fprintf(stderr, "Y203[68]!!!\n");
-
-  *((uint32_t *)read_buffer) = htonl(ret & 0xFFFFFFFF);
-  return 4;
+  if (which == P_TIME) {
+    ret += TIME_DIFF;
+    if (ret > 0xFFFFFFFF)
+      fprintf(stderr, "Y203[68]!!!\n");
+    *((uint32_t *)read_buffer) = htonl(ret & 0xFFFFFFFF);
+    return 4;
+  } else {
+    ctime_r(&ret, read_buffer);
+    return strnlen(read_buffer, READ_BUF_SIZE);
+  }
 }
 
 static int handle_tcp(struct sockdef *sock_info) {
@@ -170,8 +181,8 @@ static int handle_tcp(struct sockdef *sock_info) {
       return -errno;
     } else
       return -1; // To close it and remove from epoll
-  } else if (sock_info->protocol == P_TIME) {
-    ret = handle_time();
+  } else if (sock_info->protocol == P_TIME || sock_info->protocol == P_DAYTIME) {
+    ret = handle_time(sock_info->protocol);
     if (ret < 0)
       return -1;
     ret = write(sock_info->fd, read_buffer, ret);
@@ -221,8 +232,8 @@ static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, int 
     read_qotd_message();
     buf = qotd_message;
     buflen = strnlen(buf, MAX_QOTD_SIZE);
-  } else if (sock_info->protocol == P_TIME) {
-    ret = handle_time();
+  } else if (sock_info->protocol == P_TIME || sock_info->protocol == P_DAYTIME) {
+    ret = handle_time(sock_info->protocol);
     if (ret < 0)
       return -1;
     buflen = ret;
@@ -265,9 +276,12 @@ static void log_connection(struct sockaddr_in6 *addr, struct sockdef *sock_info)
   case P_TIME:
     proto_str = "TIME";
     break;
+  case P_DAYTIME:
+    proto_str = "DAYT";
+    break;
   }
 
-  printf("%s %s connection from ", proto_str, sock_info->flags & 1 ? "TCP" : "UDP");
+  printf("%s %s connection from ", proto_str, sock_info->flags & F_TCP ? "TCP" : "UDP");
 
   buf[len++] = '[';
   for (i = 0; i < 8; i++) {
@@ -315,8 +329,8 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 
   curr_sock_info = (struct sockdef *)event->data.ptr;
 
-  if (curr_sock_info->flags & 1) { // TCP
-    if (curr_sock_info->flags & 2) { // Server
+  if (curr_sock_info->flags & F_TCP) {
+    if (curr_sock_info->flags & F_SERVER) {
       ret = accept(curr_sock_info->fd, (struct sockaddr *) &accept_addr, &accept_addr_len);
       if (ret < 0) {
 	fprintf(stderr, "Error accepting client from TCP: %d\n", errno);
@@ -329,7 +343,7 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	tcp_port = curr_sock_info->protocol;
 	curr_sock_info = (struct sockdef *)malloc(sizeof(struct sockdef));
 	curr_sock_info->fd = ret;
-	curr_sock_info->flags = 1;
+	curr_sock_info->flags = F_TCP;
 	curr_sock_info->protocol = tcp_port;
 	event->events = EPOLLIN;
 	event->data.ptr = curr_sock_info;
@@ -338,7 +352,7 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	  fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
 	  close(curr_sock_info->fd);
 	}
-	if (tcp_port != P_QOTD && tcp_port != P_TIME)
+	if (curr_sock_info->flags & F_AUTO)
 	  return;
       }
     }

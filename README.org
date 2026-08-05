@@ -8,3 +8,5 @@ RFC 865 compliant
 RFC 4 compliant
 
 RFC 868 compliant
+
+RFC 867 compliant
