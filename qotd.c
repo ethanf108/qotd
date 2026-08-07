@@ -349,13 +349,14 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	curr_sock_info->protocol = tcp_port;
 
 	if (!pauto) {
-	  event->events = EPOLLIN;
+	  event->events = EPOLLIN | EPOLLET;
 	  event->data.ptr = curr_sock_info;
 	  ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, curr_sock_info->fd, event);
 	  if (ret < 0) {
 	    fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
 	    close(curr_sock_info->fd);
 	  }
+	  return;
 	}
       }
     }
