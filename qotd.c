@@ -148,8 +148,11 @@ static int setup_server(int tcp, int port, int epoll_fd) {
 }
 
 static int handle_time(int which) {
-  time_t ret = time(NULL);
-  if (ret == (time_t) -1) {
+  size_t size = READ_BUF_SIZE;
+  time_t tim = time(NULL);
+  struct tm tm;
+
+  if (tim == (time_t) -1) {
     if (errno == EOVERFLOW)
       fprintf(stderr, "Time overflow!!!\n");
     else
@@ -158,14 +161,18 @@ static int handle_time(int which) {
   }
 
   if (which == P_TIME) {
-    ret += TIME_DIFF;
-    if (ret > 0xFFFFFFFF)
+    tim += TIME_DIFF;
+    if (tim > 0xFFFFFFFF)
       fprintf(stderr, "Y203[68]!!!\n");
-    *((uint32_t *)read_buffer) = htonl(ret & 0xFFFFFFFF);
+    *((uint32_t *)read_buffer) = htonl(tim & 0xFFFFFFFF);
     return 4;
   } else {
-    ctime_r(&ret, read_buffer);
-    return strnlen(read_buffer, READ_BUF_SIZE);
+    tim -= 60 * 60 * 4; // to offset for TZ
+    if (gmtime_r(&tim, &tm) == NULL) {
+      fprintf(stderr, "Error convertime time\n");
+      return -1;
+    }
+    return (int) strftime(read_buffer, READ_BUF_SIZE, "%Y-%m-%d %H:%M:%S", &tm);
   }
 }
 
