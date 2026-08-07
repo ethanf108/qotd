@@ -317,7 +317,7 @@ static void log_connection(struct sockaddr_in6 *addr, struct sockdef *sock_info)
 }
 
 static void handle(struct epoll_event *event, int epoll_fd) {
-  int ret, tcp_port;
+  int ret, tcp_port, pauto;
   struct sockaddr_in6 accept_addr;
   socklen_t accept_addr_len = sizeof(accept_addr);
   struct sockdef *curr_sock_info;
@@ -340,27 +340,32 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	fprintf(stderr, "Received sockaddr bigger than sizeof(struct sockaddr_in)!!! HUH ???\n");
       else {
 	log_connection(&accept_addr, curr_sock_info);
+	pauto = curr_sock_info->flags & F_AUTO;
 	tcp_port = curr_sock_info->protocol;
+
 	curr_sock_info = (struct sockdef *)malloc(sizeof(struct sockdef));
 	curr_sock_info->fd = ret;
-	curr_sock_info->flags = F_TCP;
+	curr_sock_info->flags = F_TCP | pauto;
 	curr_sock_info->protocol = tcp_port;
-	event->events = EPOLLIN;
-	event->data.ptr = curr_sock_info;
-	ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, curr_sock_info->fd, event);
-	if (ret < 0) {
-	  fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
-	  close(curr_sock_info->fd);
+
+	if (!pauto) {
+	  event->events = EPOLLIN;
+	  event->data.ptr = curr_sock_info;
+	  ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, curr_sock_info->fd, event);
+	  if (ret < 0) {
+	    fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
+	    close(curr_sock_info->fd);
+	  }
 	}
-	if (curr_sock_info->flags & F_AUTO)
-	  return;
       }
     }
     ret = handle_tcp(curr_sock_info);
     if (ret < 0) {
-      ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, curr_sock_info->fd, NULL);
-      if (ret < 0) {
-	fprintf(stderr, "Error removing fd %d from epoll: %d\n", curr_sock_info->fd, errno);
+      if (!pauto) {
+	ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, curr_sock_info->fd, NULL);
+	if (ret < 0) {
+	  fprintf(stderr, "Error removing fd %d from epoll: %d\n", curr_sock_info->fd, errno);
+	}
       }
       close(curr_sock_info->fd);
       free(curr_sock_info);
