@@ -65,11 +65,10 @@ static int read_qotd_message() {
   }
 
   ret = read(fd, qotd_message, MAX_QOTD_SIZE);
-  if (ret < 0) {
+  if (ret < 0)
     fprintf(stderr, "Error reading QOTD file: %d\n", errno);
-  } else if (ret < MAX_QOTD_SIZE) {
+  else if (ret < MAX_QOTD_SIZE)
     qotd_message[ret] = '\0';
-  }
 
   if (close(fd) < 0) {
     fprintf(stderr, "Error closing file (?): %d\n", errno);
@@ -93,9 +92,8 @@ static int setup_server(int tcp, int port, int epoll_fd) {
 
   ret = 1;
   ret = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &ret, sizeof(ret));
-  if (ret < 0) {
+  if (ret < 0)
     fprintf(stderr, "Error setting SO_REUSEPORT on %s port %d: %d. Proceeding\n", tcp == 1 ? "TCP" : "UDP", port, errno);
-  }
 
   bindaddr.sin6_family = AF_INET6;
   bindaddr.sin6_port = htons(port);
@@ -137,10 +135,8 @@ static int setup_server(int tcp, int port, int epoll_fd) {
   if (ret < 0) {
     fprintf(stderr, "Error adding %s port %d to epoll: %d\n", tcp == 1 ? "TCP" : "UDP", port, errno);
     ret = -errno;
-    goto err;
-  }
-
-  return fd;
+  } else
+    return fd;
 
  err:
   close(fd);
@@ -187,7 +183,7 @@ static int handle_tcp(struct sockdef *sock_info) {
 	fprintf(stderr, "Error sending message to client: %d\n", errno);
       return -errno;
     } else
-      return -1; // To close it and remove from epoll
+      return -1;
   } else if (sock_info->protocol == P_TIME || sock_info->protocol == P_DAYTIME) {
     ret = handle_time(sock_info->protocol);
     if (ret < 0)
@@ -206,19 +202,17 @@ static int handle_tcp(struct sockdef *sock_info) {
   } else if (ret == 0)
     return -1;
 
-  if (sock_info->protocol == P_FOUR) {
+  if (sock_info->protocol == P_DISCARD)
+    return 0;
+  else if (sock_info->protocol == P_FOUR) {
     pos = 0;
-    for (i = 0; i < ret; i++) {
+    for (i = 0; i < ret; i++)
       if (read_buffer[i] == '4')
 	read_buffer[pos++] = '4';
-    }
     if (pos == 0)
       return 0;
     ret = pos;
   }
-
-  if (sock_info->protocol == P_DISCARD)
-    return 0;
 
   ret = write(sock_info->fd, read_buffer, ret);
   if (ret < 0) {
@@ -246,10 +240,9 @@ static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, int 
     buflen = ret;
   } else if (sock_info->protocol == P_FOUR) {
     ret = 0;
-    for (i = 0; i < buflen; i++) {
+    for (i = 0; i < buflen; i++)
       if (buf[i] == '4')
 	buf[ret++] = '4';
-    }
     buflen = ret;
   }
 
@@ -296,12 +289,9 @@ static void log_connection(struct sockaddr_in6 *addr, struct sockdef *sock_info)
       if (buf[len - 1] != ':')
 	buf[len++] = ':';
       continue;
-    }
-    // ipv4
-    if (hextets[i] == 0xFFFF && i == 5 & len == 2) {
+    } else if (hextets[i] == 0xFFFF && i == 5 & len == 2) // ipv4 mapped
       goto ipv4;
-    }
-    if (i > 0)
+    else if (i > 0)
       buf[len++] = ':';
     len += sprintf(buf + len, "%x", ntohs(hextets[i]));
   }
@@ -371,9 +361,8 @@ static void handle(struct epoll_event *event, int epoll_fd) {
     if (ret < 0) {
       if (!pauto) {
 	ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, curr_sock_info->fd, NULL);
-	if (ret < 0) {
+	if (ret < 0)
 	  fprintf(stderr, "Error removing fd %d from epoll: %d\n", curr_sock_info->fd, errno);
-	}
       }
       close(curr_sock_info->fd);
       free(curr_sock_info);
@@ -420,14 +409,12 @@ int main(int argc, char **argv) {
 
   for (i = 0; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
     ret = setup_server(1, protocols[i], epoll_fd);
-    if (ret < 0) {
+    if (ret < 0)
       return 1;
-    }
 
     ret = setup_server(0, protocols[i], epoll_fd);
-    if (ret < 0) {
+    if (ret < 0)
       return 1;
-    }
   }
 
   while (1) {
@@ -439,8 +426,7 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    for (i = 0; i < ret; i++) {
+    for (i = 0; i < ret; i++)
       handle(&events[i], epoll_fd);
-    }
   }
 }
