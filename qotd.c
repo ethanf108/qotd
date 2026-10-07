@@ -9,6 +9,7 @@
 #include <sys/epoll.h>
 #include <string.h>
 #include <time.h>
+#include <sys/inotify.h>
 
 #define QOTD_PORT 17
 #define MAX_QOTD_SIZE 65535
@@ -29,10 +30,23 @@
 #define F_SERVER 2
 #define F_AUTO 4
 
+
+struct epoll_ping {
+  enum {
+    SOCKDEF,
+    INOTIFY,
+  } type;
+};
+
 struct sockdef {
+  struct epoll_ping header;
   int fd;
   int flags; //0b...cba: c = auto TCP (qotd, time, etc); b = 1 == server; a = 1 == tcp
   int protocol;
+};
+
+struct epoll_inotify {
+  struct epoll_ping header;
 };
 
 static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD, P_TIME, P_DAYTIME};
@@ -122,6 +136,7 @@ static int setup_server(int tcp, int port, int epoll_fd) {
     ret = -errno;
     goto err;
   }
+  sock_info->header.type = SOCKDEF;
   sock_info->fd = fd;
   sock_info->protocol = port;
   sock_info->flags = F_SERVER | tcp;
@@ -176,7 +191,6 @@ static int handle_tcp(struct sockdef *sock_info) {
   int i, ret, pos;
 
   if (sock_info->protocol == P_QOTD) {
-    read_qotd_message();
     ret = write(sock_info->fd, qotd_message, strnlen(qotd_message, MAX_QOTD_SIZE));
     if (ret < 0) {
       if (errno != ECONNRESET)
@@ -232,7 +246,6 @@ static int handle_udp(struct sockdef *sock_info, struct sockaddr_in6 *addr, int 
   if (sock_info->protocol == P_DISCARD)
     return 0;
   else if (sock_info->protocol == P_QOTD) {
-    read_qotd_message();
     buf = qotd_message;
     buflen = strnlen(buf, MAX_QOTD_SIZE);
   } else if (sock_info->protocol == P_TIME || sock_info->protocol == P_DAYTIME) {
@@ -343,6 +356,7 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	tcp_port = curr_sock_info->protocol;
 
 	curr_sock_info = (struct sockdef *)malloc(sizeof(struct sockdef));
+	curr_sock_info->header.type = SOCKDEF;
 	curr_sock_info->fd = ret;
 	curr_sock_info->flags = F_TCP | pauto;
 	curr_sock_info->protocol = tcp_port;
@@ -390,8 +404,63 @@ static void handle(struct epoll_event *event, int epoll_fd) {
   }
 }
 
+static int inotify_setup(int epoll_fd) {
+  int fd, ret;
+  struct epoll_event event;
+  struct epoll_inotify *eping;
+
+  fd = inotify_init();
+  if (fd < 0) {
+    fprintf(stderr, "Error creating QOTD inotify fd: %d\n", errno);
+    return -errno;
+  }
+
+  ret = inotify_add_watch(fd, QOTD_MESSAGE_FILE, IN_MODIFY);
+  if (ret < 0) {
+    fprintf(stderr, "Error adding a watch on QOTD inotify: %d\n", errno);
+    ret = -errno;
+    goto err;
+  }
+
+  eping = (struct epoll_inotify*)malloc(sizeof(struct epoll_ping));
+  if (eping == NULL) {
+    fprintf(stderr, "Error allocating memory for inotify eping!\n");
+    return -1;
+  }
+  eping->header.type = INOTIFY;
+
+  event.events = EPOLLIN;
+  event.data.ptr = eping;
+  ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event);
+  if (ret < 0) {
+    fprintf(stderr, "Error adding inotify to epoll: %d\n", errno);
+    ret = -errno;
+    goto err;
+  }
+
+  ret = read_qotd_message();
+  if (ret < 0)
+    goto err;
+
+  return 0;
+
+ err:
+  if(close(fd) < 0)
+    fprintf(stderr, "Error closing inotify fd???: %d\n", errno);
+  return ret;
+}
+
+static void handle_inotify(struct epoll_event *event) {
+  if (!(event->events & EPOLLIN)) {
+    fprintf(stderr, "Exceptional condition from epoll: %x\n", event->events);
+    return;
+  }
+
+  read_qotd_message();
+}
+
 int main(int argc, char **argv) {
-  int i, ret, epoll_fd;
+  int i, ret, epoll_fd, qotd_inotify_fd;
   struct epoll_event events[SIMUL_EPOLL_EVENTS];
 
   ret = setvbuf(stdout, NULL, _IOLBF, 0);
@@ -425,6 +494,9 @@ int main(int argc, char **argv) {
       return 1;
   }
 
+  if (inotify_setup(epoll_fd) < 0)
+    return 1;
+
   while (1) {
     ret = epoll_wait(epoll_fd, events, SIMUL_EPOLL_EVENTS, -1);
     if (ret < 0) {
@@ -435,6 +507,15 @@ int main(int argc, char **argv) {
     }
 
     for (i = 0; i < ret; i++)
-      handle(&events[i], epoll_fd);
+      switch (((struct epoll_ping*)events[i].data.ptr)->type) {
+      case SOCKDEF:
+	handle(&events[i], epoll_fd);
+	break;
+      case INOTIFY:
+	handle_inotify(&events[i]);
+	break;
+      default:
+	fprintf(stderr, "Error: invalid epoll_ping_type: %d\n", ((struct epoll_ping*)events[i].data.ptr)->type);
+      }
   }
 }
