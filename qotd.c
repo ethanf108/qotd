@@ -196,7 +196,9 @@ static int handle_tcp(struct sockdef *sock_info) {
 
   ret = read(sock_info->fd, read_buffer, READ_BUF_SIZE);
   if (ret < 0) {
-    if (errno != ECONNRESET)
+    if (errno == ETIMEDOUT)
+      fprintf(stderr, "Timeout while reading from TCP port %d\n", sock_info->protocol);
+    else if (errno != ECONNRESET)
       fprintf(stderr, "Error reading from TCP port %d: %d\n", sock_info->protocol, errno);
     return -errno;
   } else if (ret == 0)
@@ -353,6 +355,12 @@ static void handle(struct epoll_event *event, int epoll_fd) {
 	    fprintf(stderr, "Error adding new TCP connection to epoll: %d\n", errno);
 	    close(curr_sock_info->fd);
 	  }
+
+	  ret = 1;
+	  ret = setsockopt(curr_sock_info->fd, SOL_SOCKET, SO_KEEPALIVE, &ret, sizeof(ret));
+	  if (ret < 0)
+	    fprintf(stderr, "error setting SO_KEEPALIVE on fd %d: %d. Continuing.\n", curr_sock_info->fd, errno);
+
 	  return;
 	}
       }
