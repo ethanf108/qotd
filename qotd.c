@@ -47,6 +47,7 @@ struct sockdef {
 
 struct epoll_inotify {
   struct epoll_ping header;
+  int fd;
 };
 
 static int protocols[] = {P_FOUR, P_ECHO, P_DISCARD, P_QOTD, P_TIME, P_DAYTIME};
@@ -428,6 +429,7 @@ static int inotify_setup(int epoll_fd) {
     return -1;
   }
   eping->header.type = INOTIFY;
+  eping->fd = fd;
 
   event.events = EPOLLIN;
   event.data.ptr = eping;
@@ -451,10 +453,17 @@ static int inotify_setup(int epoll_fd) {
 }
 
 static void handle_inotify(struct epoll_event *event) {
+  int ret;
+  struct inotify_event ievent;
+
   if (!(event->events & EPOLLIN)) {
     fprintf(stderr, "Exceptional condition from epoll: %x\n", event->events);
     return;
   }
+
+  ret = read(((struct epoll_inotify*)event->data.ptr)->fd, &ievent, sizeof(ievent));
+  if (ret < 0)
+    fprintf(stderr, "Error reading inotify event: %d. Continuing\n", errno);
 
   read_qotd_message();
 }
